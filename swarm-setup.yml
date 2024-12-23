@@ -1,0 +1,52 @@
+---
+- name: Setup Docker and Docker Swarm on Manager Nodes
+  hosts: managers
+  become: true  # Ensure tasks are run as root
+  
+  tasks:
+    - name: Check if the user has sudo privileges
+      command: sudo -v
+      register: sudo_check
+      ignore_errors: yes
+
+    - name: Add user to sudo group if not already a member
+      user:
+        name: "{{ ansible_user }}"  # Replace with the username (e.g., ubuntu)
+        groups: sudo
+        append: yes
+      when: sudo_check.failed  # Only add to sudo group if the user doesn't have sudo privileges
+
+    - name: Ensure passwordless sudo for the user
+      lineinfile:
+        path: /etc/sudoers
+        line: "{{ ansible_user }} ALL=(ALL) NOPASSWD:ALL"
+        validate: '/usr/sbin/visudo -cf %s'
+      when: sudo_check.failed  # Only apply this if sudo check failed
+
+    - name: Update apt and install dependencies
+      apt:
+        update_cache: yes
+        name:
+          - docker.io
+          - docker-compose
+        state: present
+
+    - name: Ensure Docker service is started and enabled
+      service:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: Initialize Docker Swarm on the first manager node
+      shell: docker swarm init --advertise-addr {{ ansible_host }}
+      when: inventory_hostname == groups['managers'][0]
+      register: swarm_init
+
+    - name: Get the Docker Swarm manager join token
+      shell: docker swarm join-token -q manager
+      when: inventory_hostname == groups['managers'][0]
+      register: manager_token
+
+    - name: Join the other nodes to the Docker Swarm
+      shell: docker swarm join --token {{ hostvars[groups['managers'][0]]['manager_token']['stdout'] }} {{ hostvars[groups['managers'][0]]['ansible_host'] }}:2377
+      when: inventory_hostname != groups['managers'][0]
